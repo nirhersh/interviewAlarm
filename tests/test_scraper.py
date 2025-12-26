@@ -26,13 +26,28 @@ def test_scraper():
         print("\nTime Slots:")
         print("-" * 60)
 
-        for i, slot in enumerate(result['slots'][:20], 1):  # Show first 20
-            print(f"{i}. Start: {slot.get('start_time')} | End: {slot.get('end_time')}")
-            if 'raw_date' in slot and 'raw_time' in slot:
-                print(f"   Raw: {slot['raw_date']} at {slot['raw_time']}")
+        # Group slots by department for better readability
+        from collections import defaultdict
+        slots_by_dept = defaultdict(list)
+        for slot in result['slots']:
+            dept = slot.get('department', 'Unknown')
+            slots_by_dept[dept].append(slot)
 
-        if len(result['slots']) > 20:
-            print(f"\n... and {len(result['slots']) - 20} more slots")
+        # Display slots grouped by department
+        for department, dept_slots in slots_by_dept.items():
+            print(f"\n📌 {department} ({len(dept_slots)} slots)")
+            print("-" * 60)
+
+            # Group by date
+            slots_by_date = defaultdict(list)
+            for slot in dept_slots:
+                date = slot.get('date', 'Unknown')
+                slots_by_date[date].append(slot)
+
+            for date in sorted(slots_by_date.keys()):
+                times = [s.get('time', '') for s in slots_by_date[date]]
+                times_str = ', '.join(sorted(times))
+                print(f"  {date}: {times_str}")
 
         print("\n" + "=" * 60)
         print("SUCCESS: Scraper completed successfully!")

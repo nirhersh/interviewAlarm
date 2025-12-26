@@ -40,22 +40,51 @@ No available time slots found.
 
 URL: {url}"""
 
-    # Format slots
-    formatted_slots = []
-    for slot in slots[:20]:  # Limit to first 20 slots
-        start_dt = parse_iso_datetime(slot['start_time'])
-        end_dt = parse_iso_datetime(slot['end_time'])
+    # Group slots by department
+    from collections import defaultdict
+    slots_by_dept = defaultdict(list)
+    for slot in slots:
+        dept = slot.get('department')
+        slots_by_dept[dept].append(slot)
 
-        if start_dt and end_dt:
-            date_str = start_dt.strftime("%Y-%m-%d")
-            start_time = start_dt.strftime("%H:%M")
-            end_time = end_dt.strftime("%H:%M")
-            formatted_slots.append(f"  {date_str} | {start_time} - {end_time}")
+    # Format slots grouped by department
+    formatted_sections = []
+    total_shown = 0
+    max_slots_to_show = 50  # Total limit across all departments
 
-    slots_text = "\n".join(formatted_slots)
+    for department, dept_slots in sorted(slots_by_dept.items(), key=lambda x: (x[0] is None, x[0] or '')):
+        if total_shown >= max_slots_to_show:
+            break
 
-    if len(slots) > 20:
-        slots_text += f"\n  ... and {len(slots) - 20} more slots"
+        # Department header
+        if department:
+            section = f"\n**{department}** ({len(dept_slots)} slots):\n"
+        else:
+            section = f"\n**Available slots** ({len(dept_slots)} slots):\n"
+
+        # Format individual slots
+        dept_formatted_slots = []
+        for slot in dept_slots:
+            if total_shown >= max_slots_to_show:
+                break
+
+            start_dt = parse_iso_datetime(slot['start_time'])
+            end_dt = parse_iso_datetime(slot['end_time'])
+
+            if start_dt and end_dt:
+                date_str = start_dt.strftime("%Y-%m-%d")
+                start_time = start_dt.strftime("%H:%M")
+                end_time = end_dt.strftime("%H:%M")
+                dept_formatted_slots.append(f"  {date_str} | {start_time} - {end_time}")
+                total_shown += 1
+
+        section += "\n".join(dept_formatted_slots)
+        formatted_sections.append(section)
+
+    slots_text = "\n".join(formatted_sections)
+
+    if len(slots) > max_slots_to_show:
+        slots_text += f"\n\n  ... and {len(slots) - max_slots_to_show} more slots"
 
     return f"""**{company_name}**
 
@@ -79,28 +108,57 @@ def format_new_slot_notification(company_name: str, url: str, new_slots: List[Di
     if not new_slots:
         return ""
 
-    # Format new slots
-    formatted_slots = []
-    for slot in new_slots[:10]:  # Limit to first 10 new slots
-        start_dt = parse_iso_datetime(slot['start_time'])
-        end_dt = parse_iso_datetime(slot['end_time'])
+    # Group slots by department
+    from collections import defaultdict
+    slots_by_dept = defaultdict(list)
+    for slot in new_slots:
+        dept = slot.get('department')
+        slots_by_dept[dept].append(slot)
 
-        if start_dt and end_dt:
-            date_str = start_dt.strftime("%Y-%m-%d")
-            start_time = start_dt.strftime("%H:%M")
-            end_time = end_dt.strftime("%H:%M")
-            formatted_slots.append(f"  {date_str} | {start_time} - {end_time}")
+    # Format slots grouped by department
+    formatted_sections = []
+    total_shown = 0
+    max_slots_to_show = 20  # Total limit for notifications
 
-    slots_text = "\n".join(formatted_slots)
+    for department, dept_slots in sorted(slots_by_dept.items(), key=lambda x: (x[0] is None, x[0] or '')):
+        if total_shown >= max_slots_to_show:
+            break
 
-    if len(new_slots) > 10:
-        slots_text += f"\n  ... and {len(new_slots) - 10} more new slots"
+        # Department header
+        if department:
+            section = f"\n**{department}** ({len(dept_slots)} new):\n"
+        else:
+            section = f"\n**New slots** ({len(dept_slots)}):\n"
+
+        # Format individual slots
+        dept_formatted_slots = []
+        for slot in dept_slots:
+            if total_shown >= max_slots_to_show:
+                break
+
+            start_dt = parse_iso_datetime(slot['start_time'])
+            end_dt = parse_iso_datetime(slot['end_time'])
+
+            if start_dt and end_dt:
+                date_str = start_dt.strftime("%Y-%m-%d")
+                start_time = start_dt.strftime("%H:%M")
+                end_time = end_dt.strftime("%H:%M")
+                dept_formatted_slots.append(f"  {date_str} | {start_time} - {end_time}")
+                total_shown += 1
+
+        section += "\n".join(dept_formatted_slots)
+        formatted_sections.append(section)
+
+    slots_text = "\n".join(formatted_sections)
+
+    if len(new_slots) > max_slots_to_show:
+        slots_text += f"\n\n  ... and {len(new_slots) - max_slots_to_show} more new slots"
 
     return f"""**NEW TIME SLOTS AVAILABLE!**
 
 Company: {company_name}
 
-New slots ({len(new_slots)}):
+New slots ({len(new_slots)} total):
 {slots_text}
 
 Book now: {url}"""

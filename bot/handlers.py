@@ -1,5 +1,6 @@
 from telegram import Update
 from telegram.ext import ContextTypes
+from telegram.error import TimedOut, NetworkError
 from database.db import Database
 from scraper.needle_scraper import scrape_needle_page, NeedleScraperError
 from bot import messages
@@ -63,20 +64,35 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Send summary
         summary = messages.format_slot_summary(company_name, url, slots)
-        await processing_msg.edit_text(summary, parse_mode='Markdown')
+        try:
+            await processing_msg.edit_text(summary, parse_mode='Markdown')
+        except (TimedOut, NetworkError) as e:
+            # If editing fails due to timeout, send a new message
+            logger.warning(f"Failed to edit message due to timeout, sending new message: {e}")
+            await update.message.reply_text(summary, parse_mode='Markdown')
 
         logger.info(f"User {user_id} added URL: {url} ({company_name})")
 
     except NeedleScraperError as e:
-        await processing_msg.edit_text(
-            messages.format_error_message(str(e))
-        )
+        try:
+            await processing_msg.edit_text(
+                messages.format_error_message(str(e))
+            )
+        except (TimedOut, NetworkError):
+            await update.message.reply_text(
+                messages.format_error_message(str(e))
+            )
         logger.error(f"Scraping error for {url}: {e}")
 
     except Exception as e:
-        await processing_msg.edit_text(
-            messages.format_error_message(f"An unexpected error occurred: {str(e)}")
-        )
+        try:
+            await processing_msg.edit_text(
+                messages.format_error_message(f"An unexpected error occurred: {str(e)}")
+            )
+        except (TimedOut, NetworkError):
+            await update.message.reply_text(
+                messages.format_error_message(f"An unexpected error occurred: {str(e)}")
+            )
         logger.error(f"Unexpected error in add_command: {e}", exc_info=True)
 
 

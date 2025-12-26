@@ -56,30 +56,29 @@ def scrape_needle_page(url: str) -> Dict:
         chrome_options.add_argument("--lang=he-IL")  # Hebrew locale
         chrome_options.add_argument("--remote-debugging-port=9222")  # For WSL compatibility
 
-        # Try to find Chrome binary (prefer Windows Chrome on WSL)
+        # Try to find Chrome binary (prefer Linux Chrome)
         import shutil
         import os
         chrome_binary = None
 
-        # Check for Windows Chrome first (for WSL environments)
-        windows_chrome_paths = [
-            '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
-            '/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-        ]
-
-        for win_path in windows_chrome_paths:
-            if os.path.exists(win_path):
-                chrome_binary = win_path
-                logger.info(f"Found Windows Chrome: {chrome_binary}")
+        # Check for Linux Chrome first
+        for binary_name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
+            binary_path = shutil.which(binary_name)
+            if binary_path:
+                chrome_binary = binary_path
+                logger.info(f"Found Linux browser: {chrome_binary}")
                 break
 
-        # If no Windows Chrome, try Linux binaries
+        # If no Linux Chrome, try Windows Chrome paths (for WSL environments)
         if not chrome_binary:
-            for binary_name in ['google-chrome', 'chromium-browser', 'chromium', 'google-chrome-stable']:
-                binary_path = shutil.which(binary_name)
-                if binary_path:
-                    chrome_binary = binary_path
-                    logger.info(f"Found Linux browser: {chrome_binary}")
+            windows_chrome_paths = [
+                '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
+                '/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+            ]
+            for win_path in windows_chrome_paths:
+                if os.path.exists(win_path):
+                    chrome_binary = win_path
+                    logger.info(f"Found Windows Chrome: {chrome_binary}")
                     break
 
         # Set the Chrome binary location if found
@@ -126,12 +125,12 @@ def scrape_needle_page(url: str) -> Dict:
             change_cancel_button = wait.until(
                 EC.element_to_be_clickable((
                     By.XPATH,
-                    "//button[.//span[contains(text(), 'שינוי או ביטול')]]"
+                    "//button[contains(@class, 'ant-btn')]//span[contains(text(), 'שינוי או ביטול')]"
                 ))
             )
             change_cancel_button.click()
             logger.info("Clicked 'Change or cancel interview' button")
-            time.sleep(1)
+            time.sleep(1.5)
         except TimeoutException:
             raise NeedleScraperError(
                 "Could not find 'Change or cancel interview' button. "
@@ -143,12 +142,12 @@ def scrape_needle_page(url: str) -> Dict:
             change_date_button = wait.until(
                 EC.element_to_be_clickable((
                     By.XPATH,
-                    "//button[.//span[contains(text(), 'שינוי מועד')]]"
+                    "//button[contains(@class, 'ant-btn')]//span[contains(text(), 'שינוי מועד')]"
                 ))
             )
             change_date_button.click()
             logger.info("Clicked 'Change interview date' button")
-            time.sleep(2)  # Wait for calendar to load
+            time.sleep(2)  # Wait for slots to load
         except TimeoutException:
             raise NeedleScraperError(
                 "Could not find 'Change interview date' button"
@@ -176,152 +175,279 @@ def scrape_needle_page(url: str) -> Dict:
 
 
 def extract_company_name_from_page(driver) -> str:
-    """Extract company name from the page"""
+    """Extract company name from the page - looks for h4 with 'תודה ובהצלחה!' followed by company name"""
     try:
-        # Try to get from page title
-        title = driver.title
-        if title and title != "Needle":
-            return title
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-        # Try to find company name in the page content
-        # Look for firm/company information in various places
-        try:
-            soup = BeautifulSoup(driver.page_source, 'html.parser')
-
-            # Look for any heading or text that might be the company name
-            # This is a best-effort approach
-            headings = soup.find_all(['h1', 'h2', 'h3'])
-            for heading in headings:
-                text = heading.get_text(strip=True)
-                # Skip common Hebrew phrases that aren't company names
-                if text and text not in ['הראיון נקבע בהצלחה', 'שינוי או ביטול הראיון']:
-                    return text
-        except Exception:
-            pass
+        # Find h4 containing "תודה ובהצלחה!"
+        headings = soup.find_all('h4')
+        for heading in headings:
+            if 'תודה ובהצלחה' in heading.get_text():
+                # The company name is after the <br> tag
+                br = heading.find('br')
+                if br and br.next_sibling:
+                    company_name = br.next_sibling.strip()
+                    if company_name:
+                        return company_name
 
         return "Unknown Company"
 
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Error extracting company name: {e}")
         return "Unknown Company"
 
 
 def extract_time_slots_from_calendar(driver, wait) -> List[Dict]:
     """
-    Extract available time slots from the calendar interface
+    Extract available time slots from the new calendar interface
 
-    The slots appear as buttons after clicking on different days in the calendar
+    Process:
+    1. Iterate through all departments in the dropdown
+    2. For each department, iterate through all available days
+    3. For each day, extract all available time slots
+
+    Structure:
+    - Department selector: span.ant-select-selection-item (inside ant-select)
+    - Date selector with left/right arrows
+    - Time slots in: ul.SlotsComponent_slotsList__DzZ_L > li
     """
     all_slots = []
 
     try:
-        # Wait for calendar to be visible
+        # Wait for the form to be visible
+        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "SlotsComponent_slotsComponent__E9g_r")))
         time.sleep(1)
 
-        # Get the current page source and parse it
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        # Get all available departments
+        departments = get_all_departments(driver, wait)
 
-        # Strategy 1: Look for time slot buttons in the current view
-        # Time slots are usually displayed as clickable buttons with time text
-        time_buttons = driver.find_elements(By.XPATH,
-            "//button[contains(@class, 'ant-btn') and contains(., ':')]"
-        )
+        if departments == [None]:
+            logger.info("No department selector - processing day/time slots only")
+        else:
+            logger.info(f"Found {len(departments)} departments")
 
-        # Extract times from visible buttons
-        for button in time_buttons:
+        # Iterate through each department (or single None if no departments)
+        for dept_index, department in enumerate(departments):
             try:
-                button_text = button.text.strip()
-                # Check if it looks like a time (contains ':')
-                if ':' in button_text and len(button_text) <= 10:
-                    # This is likely a time slot
-                    # We need to construct full datetime from the time
-                    # For now, we'll collect what we can see
-                    logger.debug(f"Found time slot button: {button_text}")
-            except Exception:
+                dept_label = department if department else "default"
+                if department:
+                    logger.info(f"Processing department {dept_index + 1}/{len(departments)}: {department}")
+                else:
+                    logger.info("Processing time slots")
+
+                # Select the department (skips if None)
+                select_department(driver, wait, department)
+                time.sleep(1)  # Wait for slots to load
+
+                # Extract slots for all days in this department
+                dept_slots = extract_slots_for_department(driver, wait, department)
+                all_slots.extend(dept_slots)
+
+            except Exception as e:
+                logger.error(f"Error processing {dept_label}: {e}")
                 continue
 
-        # Strategy 2: Try to click through available days to find all slots
-        # Find all clickable day cells in the calendar
-        try:
-            day_cells = driver.find_elements(By.XPATH,
-                "//td[contains(@class, 'ant-picker-cell') and not(contains(@class, 'ant-picker-cell-disabled'))]"
-            )
-
-            logger.info(f"Found {len(day_cells)} available days in calendar")
-
-            # Click on each available day (limit to first 10 to avoid too long execution)
-            for i, day_cell in enumerate(day_cells[:10]):
-                try:
-                    # Scroll to element and click
-                    driver.execute_script("arguments[0].scrollIntoView(true);", day_cell)
-                    time.sleep(0.3)
-                    day_cell.click()
-                    time.sleep(0.5)
-
-                    # Get the selected date (from the cell's aria-label or text)
-                    date_str = day_cell.get_attribute('title') or day_cell.text
-
-                    # Now look for time slots for this day
-                    day_slots = extract_slots_for_current_day(driver, date_str)
-                    all_slots.extend(day_slots)
-
-                    logger.debug(f"Day {i+1}: Found {len(day_slots)} slots")
-
-                except Exception as e:
-                    logger.debug(f"Error clicking day {i}: {e}")
-                    continue
-
-        except Exception as e:
-            logger.warning(f"Could not iterate through calendar days: {e}")
-
-        # Remove duplicates based on start_time
-        unique_slots = []
-        seen_times = set()
-        for slot in all_slots:
-            if slot['start_time'] not in seen_times:
-                unique_slots.append(slot)
-                seen_times.add(slot['start_time'])
-
-        return unique_slots
+        logger.info(f"Total slots extracted across all departments: {len(all_slots)}")
+        return all_slots
 
     except Exception as e:
         logger.error(f"Error extracting time slots: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
-def extract_slots_for_current_day(driver, date_str: str) -> List[Dict]:
+def get_all_departments(driver, wait) -> List[str]:
+    """Get list of all available departments from the dropdown
+
+    Returns:
+        List of department names, or [None] if no department selector exists
     """
-    Extract time slots for the currently selected day
-    """
-    slots = []
+    departments = []
 
     try:
-        # Find all time slot buttons (they usually have time format like "14:30")
-        time_buttons = driver.find_elements(By.XPATH,
-            "//button[contains(@class, 'ant-btn') and contains(., ':')]"
-        )
+        # Check if department selector exists (with shorter timeout)
+        short_wait = WebDriverWait(driver, 2)
+        dept_selector = short_wait.until(EC.presence_of_element_located((
+            By.CSS_SELECTOR, ".ant-select"
+        )))
 
-        for button in time_buttons:
-            try:
-                time_text = button.text.strip()
+        # Make it clickable
+        dept_selector = wait.until(EC.element_to_be_clickable((
+            By.CSS_SELECTOR, ".ant-select"
+        )))
+        dept_selector.click()
+        time.sleep(0.5)
 
-                # Parse time (e.g., "14:30")
-                if ':' in time_text and len(time_text) <= 6:
-                    # Try to combine with date to create full datetime
-                    # This is approximate - we'll do our best to construct it
+        # Find all options in the dropdown
+        options = driver.find_elements(By.CSS_SELECTOR, ".ant-select-item-option")
+        for option in options:
+            dept_name = option.text.strip()
+            if dept_name:
+                departments.append(dept_name)
 
-                    # For now, create a placeholder datetime
-                    # In production, you'd parse the date_str properly
-                    slots.append({
-                        'start_time': time_text,  # We'll improve this
-                        'end_time': time_text,     # Placeholder
-                        'raw_time': time_text,
-                        'raw_date': date_str
-                    })
+        # Close dropdown by clicking selector again or pressing escape
+        try:
+            dept_selector.click()
+        except:
+            pass
 
-            except Exception:
-                continue
+        time.sleep(0.3)
+
+    except TimeoutException:
+        # No department selector found - this is normal for some pages
+        logger.info("No department selector found - page only has day/time selection")
+        return [None]  # Return list with None to indicate no departments
+    except Exception as e:
+        logger.error(f"Error getting departments: {e}")
+        # Fallback: try to get current department
+        try:
+            current_dept = driver.find_element(By.CSS_SELECTOR, "span.ant-select-selection-item")
+            dept_text = current_dept.text.strip()
+            if dept_text:
+                departments.append(dept_text)
+        except:
+            # No department selector at all
+            logger.info("No department selector found - page only has day/time selection")
+            return [None]
+
+    return departments if departments else [None]
+
+
+def select_department(driver, wait, department_name: Optional[str]):
+    """Select a specific department from the dropdown
+
+    Args:
+        department_name: Name of department to select, or None if no department selector
+    """
+    # Skip if no department (page has only day/time selection)
+    if department_name is None:
+        logger.debug("No department to select - page has only day/time selection")
+        return
+
+    try:
+        # Click on the department selector
+        dept_selector = wait.until(EC.element_to_be_clickable((
+            By.CSS_SELECTOR, ".ant-select"
+        )))
+        dept_selector.click()
+        time.sleep(0.5)
+
+        # Find and click the option with matching text
+        options = driver.find_elements(By.CSS_SELECTOR, ".ant-select-item-option")
+        for option in options:
+            if option.text.strip() == department_name:
+                option.click()
+                time.sleep(0.5)
+                return
+
+        # If not found, close dropdown
+        dept_selector.click()
 
     except Exception as e:
-        logger.debug(f"Error extracting slots for day: {e}")
+        logger.error(f"Error selecting department '{department_name}': {e}")
+
+
+def extract_slots_for_department(driver, wait, department: Optional[str]) -> List[Dict]:
+    """Extract all time slots for a given department by iterating through days
+
+    Args:
+        department: Department name, or None if page has no department selector
+    """
+    dept_slots = []
+    max_days = 60  # Limit to prevent infinite loop
+    visited_dates = set()
+    dept_label = department if department else "default"
+
+    for day_index in range(max_days):
+        try:
+            # Get current date from the date selector
+            date_selector = driver.find_element(By.CLASS_NAME, "SlotsComponent_dateSelector__aXL6m")
+            date_text = date_selector.text.strip()
+
+            # Extract just the date part
+            import re
+            date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', date_text)
+            current_date = date_match.group(1) if date_match else date_text
+
+            # Skip if we've already visited this date (means we've looped)
+            if current_date in visited_dates:
+                logger.debug(f"Already visited date {current_date} for {dept_label}, stopping")
+                break
+
+            visited_dates.add(current_date)
+
+            # Extract time slots for current day
+            day_slots = extract_slots_for_current_day(driver, current_date, department)
+            dept_slots.extend(day_slots)
+
+            # Click the "next day" button (left arrow in RTL)
+            try:
+                next_button = driver.find_element(By.CSS_SELECTOR,
+                    "button.SlotsComponent_left__KXo2o:not([disabled])")
+                next_button.click()
+                time.sleep(0.5)  # Wait for new slots to load
+            except Exception:
+                # No more days available or button is disabled
+                logger.debug(f"No more days available for {dept_label}")
+                break
+
+        except Exception as e:
+            logger.debug(f"Error processing day {day_index} for {dept_label}: {e}")
+            break
+
+    logger.info(f"Found {len(dept_slots)} slots for {dept_label}")
+    return dept_slots
+
+
+def extract_slots_for_current_day(driver, date_str: str, department: Optional[str]) -> List[Dict]:
+    """
+    Extract time slots for the currently selected day from ul.SlotsComponent_slotsList__DzZ_L > li
+
+    Args:
+        date_str: Date string in DD.MM.YYYY format
+        department: Department name, or None if page has no department selector
+
+    Returns:
+        List of slot dictionaries with department (may be None), date, and time information
+    """
+    slots = []
+    dept_label = department if department else "default"
+
+    try:
+        # Find the slots list
+        slots_list = driver.find_element(By.CSS_SELECTOR, "ul.SlotsComponent_slotsList__DzZ_L")
+        time_items = slots_list.find_elements(By.TAG_NAME, "li")
+
+        for item in time_items:
+            try:
+                time_text = item.text.strip()
+
+                # Validate it's a time (format: HH:MM)
+                if ':' in time_text and len(time_text) <= 6:
+                    # Convert DD.MM.YYYY HH:MM to ISO 8601 format for database compatibility
+                    # date_str format: DD.MM.YYYY
+                    # time_text format: HH:MM
+                    day, month, year = date_str.split('.')
+                    iso_datetime = f"{year}-{month}-{day}T{time_text}:00"
+
+                    slots.append({
+                        'department': department,  # May be None if no department selector
+                        'date': date_str,
+                        'time': time_text,
+                        'datetime': f"{date_str} {time_text}",
+                        'start_time': iso_datetime,  # ISO 8601 format for DB storage
+                        'end_time': iso_datetime     # Placeholder - duration unknown
+                    })
+
+            except Exception as e:
+                logger.debug(f"Error extracting time slot: {e}")
+                continue
+
+        if len(slots) > 0:
+            logger.debug(f"Found {len(slots)} slots for {dept_label} on {date_str}")
+
+    except Exception as e:
+        logger.debug(f"No slots found for {dept_label} on {date_str}: {e}")
 
     return slots
