@@ -24,10 +24,12 @@ def scrape_needle_page(url: str) -> Dict:
     """
     Scrape a needle.co.il interview scheduling page using Selenium
 
-    This function handles already-booked interview pages by:
-    1. Clicking "Change or cancel interview" button
-    2. Clicking "Change interview date" button
-    3. Extracting available time slots from the calendar interface
+    This function handles two types of pages:
+    1. Pages where slots are already visible (direct access)
+    2. Already-booked interview pages that require navigation:
+       - Click "Change or cancel interview" button
+       - Click "Change interview date" button
+    3. Extract available time slots from the calendar interface
 
     Args:
         url: The needle.co.il candidate-slots URL
@@ -120,38 +122,50 @@ def scrape_needle_page(url: str) -> Dict:
         # Extract company name early (from page title or logo)
         company_name = extract_company_name_from_page(driver)
 
-        # Click "Change or cancel interview" button (שינוי או ביטול הראיון)
+        # Check if slots are already visible (no buttons needed)
         try:
-            change_cancel_button = wait.until(
-                EC.element_to_be_clickable((
-                    By.XPATH,
-                    "//button[contains(@class, 'ant-btn')]//span[contains(text(), 'שינוי או ביטול')]"
-                ))
-            )
-            change_cancel_button.click()
-            logger.info("Clicked 'Change or cancel interview' button")
-            time.sleep(1.5)
+            short_wait = WebDriverWait(driver, 3)
+            short_wait.until(EC.presence_of_element_located((
+                By.CLASS_NAME, "SlotsComponent_slotsComponent__E9g_r"
+            )))
+            logger.info("Slots interface already visible - skipping button clicks")
+            time.sleep(1)  # Brief wait for slots to fully load
         except TimeoutException:
-            raise NeedleScraperError(
-                "Could not find 'Change or cancel interview' button. "
-                "This might not be a booked interview page."
-            )
+            # Slots not visible yet, try clicking buttons to navigate to them
+            logger.info("Slots interface not visible - attempting to navigate via buttons")
 
-        # Click "Change interview date" button (שינוי מועד הראיון)
-        try:
-            change_date_button = wait.until(
-                EC.element_to_be_clickable((
-                    By.XPATH,
-                    "//button[contains(@class, 'ant-btn')]//span[contains(text(), 'שינוי מועד')]"
-                ))
-            )
-            change_date_button.click()
-            logger.info("Clicked 'Change interview date' button")
-            time.sleep(2)  # Wait for slots to load
-        except TimeoutException:
-            raise NeedleScraperError(
-                "Could not find 'Change interview date' button"
-            )
+            # Click "Change or cancel interview" button (שינוי או ביטול הראיון)
+            try:
+                change_cancel_button = wait.until(
+                    EC.element_to_be_clickable((
+                        By.XPATH,
+                        "//button[contains(@class, 'ant-btn')]//span[contains(text(), 'שינוי או ביטול')]"
+                    ))
+                )
+                change_cancel_button.click()
+                logger.info("Clicked 'Change or cancel interview' button")
+                time.sleep(1.5)
+            except TimeoutException:
+                raise NeedleScraperError(
+                    "Could not find 'Change or cancel interview' button and slots are not visible. "
+                    "This might not be a valid interview scheduling page."
+                )
+
+            # Click "Change interview date" button (שינוי מועד הראיון)
+            try:
+                change_date_button = wait.until(
+                    EC.element_to_be_clickable((
+                        By.XPATH,
+                        "//button[contains(@class, 'ant-btn')]//span[contains(text(), 'שינוי מועד')]"
+                    ))
+                )
+                change_date_button.click()
+                logger.info("Clicked 'Change interview date' button")
+                time.sleep(2)  # Wait for slots to load
+            except TimeoutException:
+                raise NeedleScraperError(
+                    "Could not find 'Change interview date' button"
+                )
 
         # Extract available time slots
         slots = extract_time_slots_from_calendar(driver, wait)

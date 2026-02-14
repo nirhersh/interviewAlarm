@@ -138,28 +138,26 @@ class Database:
 
     def save_time_slots(self, tracked_url_id: int, slots: List[Dict], is_notified: bool = False) -> int:
         """
-        Save time slots to the database
-        Returns the number of new slots added
+        Save time slots to the database (INSERT new or UPDATE existing)
+        Returns the number of new/updated slots
         """
         conn = self.get_connection()
         cursor = conn.cursor()
 
-        new_slots_count = 0
+        slots_saved = 0
         for slot in slots:
-            try:
-                cursor.execute("""
-                    INSERT INTO time_slots (tracked_url_id, start_time, end_time, is_notified)
-                    VALUES (?, ?, ?, ?)
-                """, (tracked_url_id, slot['start_time'], slot['end_time'], is_notified))
-                new_slots_count += 1
-            except sqlite3.IntegrityError:
-                # Slot already exists (duplicate start_time for this URL)
-                continue
+            # Use INSERT OR REPLACE to handle both new and modified slots
+            # This will update the slot if it exists (same tracked_url_id + start_time)
+            cursor.execute("""
+                INSERT OR REPLACE INTO time_slots (tracked_url_id, start_time, end_time, is_notified)
+                VALUES (?, ?, ?, ?)
+            """, (tracked_url_id, slot['start_time'], slot['end_time'], is_notified))
+            slots_saved += 1
 
         conn.commit()
         conn.close()
 
-        return new_slots_count
+        return slots_saved
 
     def get_time_slots(self, tracked_url_id: int) -> List[Dict]:
         """Get all time slots for a tracked URL"""
@@ -189,16 +187,22 @@ class Database:
 
     def get_new_slots(self, tracked_url_id: int, current_slots: List[Dict]) -> List[Dict]:
         """
-        Compare current slots with DB slots and return new ones
+        Compare current slots with DB slots and return new or modified ones
         """
         # Get existing slots from DB
         db_slots = self.get_time_slots(tracked_url_id)
-        db_start_times = {slot['start_time'] for slot in db_slots}
 
-        # Find new slots
+        # Create a set of (start_time, end_time) tuples for comparison
+        db_slot_tuples = {
+            (slot['start_time'], slot['end_time'])
+            for slot in db_slots
+        }
+
+        # Find new or modified slots
+        # A slot is considered new/modified if the (start_time, end_time) pair doesn't exist
         new_slots = [
             slot for slot in current_slots
-            if slot['start_time'] not in db_start_times
+            if (slot['start_time'], slot['end_time']) not in db_slot_tuples
         ]
 
         return new_slots
